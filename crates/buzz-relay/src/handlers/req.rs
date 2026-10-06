@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use buzz_core::filter::filters_match;
 use buzz_core::kind::{
-    is_unshared_gated_event, AUTHOR_ONLY_KINDS, KIND_AGENT_ENGRAM, KIND_AGENT_TURN_METRIC,
+    is_unshared_gated_event, AGENT_OWNER_READ_KINDS, AUTHOR_ONLY_KINDS, KIND_AGENT_TURN_METRIC,
     KIND_DM_VISIBILITY, KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS,
     SHARED_GATED_KINDS,
 };
@@ -1546,9 +1546,10 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex: 
     })
 }
 
-/// Authorize read access for filters that can match KIND_AGENT_ENGRAM events.
+/// Authorize read access for filters that can match an
+/// [`AGENT_OWNER_READ_KINDS`] event (NIP-AE engrams, NIP-AT attention config).
 ///
-/// NIP-AE engrams are global (no channel scope) and have encrypted content,
+/// NIP-AE engrams (and NIP-AT attention config, which uses the same envelope) are global (no channel scope) and have encrypted content,
 /// but their public `#p` (owner) and timestamps still leak who-pairs-with-whom
 /// plus write-activity patterns. Only the agent (the event's author) or the
 /// owner (the `#p` value) should be able to enumerate them.
@@ -1564,7 +1565,7 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex: 
 /// signed envelope, which only the agent could have produced).
 ///
 /// Mixed-kind filters (e.g. `{kinds:[30174, 9]}`) are evaluated under this
-/// gate when KIND_AGENT_ENGRAM is present; matching events of other kinds in
+/// gate when one of those kinds is present; matching events of other kinds in
 /// the same filter is also restricted, but that is the conservative choice
 /// — clients should query engrams in a dedicated filter.
 pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &str) -> bool {
@@ -1575,10 +1576,10 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
             return true;
         }
 
-        let can_match_engram = filter
-            .kinds
-            .as_ref()
-            .is_none_or(|ks| ks.iter().any(|k| k.as_u16() as u32 == KIND_AGENT_ENGRAM));
+        let can_match_engram = filter.kinds.as_ref().is_none_or(|ks| {
+            ks.iter()
+                .any(|k| AGENT_OWNER_READ_KINDS.contains(&(k.as_u16() as u32)))
+        });
         if !can_match_engram {
             return true;
         }
@@ -1747,6 +1748,7 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzz_core::kind::{KIND_AGENT_ATTENTION, KIND_AGENT_ENGRAM};
     use nostr::{Alphabet, Filter, SingleLetterTag};
 
     fn lifecycle_conn() -> (
@@ -3103,6 +3105,35 @@ mod tests {
             .author(nostr::PublicKey::from_hex(&agent).unwrap())
             .custom_tags(p_tag, [&owner]);
         assert!(!engram_filters_authorized(&[f], &attacker));
+    }
+
+    #[test]
+    fn engram_gate_covers_agent_attention_kind() {
+        // NIP-AT config uses the NIP-AE envelope and the same read rule:
+        // only the agent (authors=[self]) or the owner (#p=[self]) may read.
+        let (agent, owner, attacker) = three_pubkeys();
+        let p_tag = SingleLetterTag::lowercase(Alphabet::P);
+        let kind = nostr::Kind::Custom(KIND_AGENT_ATTENTION as u16);
+        let agent_pk = nostr::PublicKey::from_hex(&agent).unwrap();
+        let by_author = Filter::new().kind(kind).author(agent_pk);
+        let by_owner = Filter::new().kind(kind).custom_tags(p_tag, [&owner]);
+        let bare = Filter::new().kind(kind);
+        let mixed = Filter::new()
+            .kinds([kind, nostr::Kind::Custom(9)])
+            .search("x");
+
+        assert!(engram_filters_authorized(
+            std::slice::from_ref(&by_author),
+            &agent
+        ));
+        assert!(engram_filters_authorized(
+            std::slice::from_ref(&by_owner),
+            &owner
+        ));
+        assert!(!engram_filters_authorized(&[by_author], &attacker));
+        assert!(!engram_filters_authorized(&[by_owner], &attacker));
+        assert!(!engram_filters_authorized(&[bare], &agent));
+        assert!(!engram_filters_authorized(&[mixed], &agent));
     }
 
     #[test]
