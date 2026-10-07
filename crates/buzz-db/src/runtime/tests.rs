@@ -3811,3 +3811,6 @@ async fn e_tag_any_runs_with_real_binds_on_p_join_and_count() {
 
 #[path = "tests/thread_window_postgres_tests.rs"]
 mod thread_window_postgres_tests;
+
+#[path = "tests/personal_read_migration_postgres_tests.rs"]
+mod personal_read_migration_postgres_tests;
