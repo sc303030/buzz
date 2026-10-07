@@ -984,9 +984,16 @@ async fn handle_ephemeral_event(
         // Membership refusals are client-input rejections, and the shared
         // gate's message text is surfaced verbatim exactly as before this
         // typed classification; no behavior change on this path.
-        super::ingest::check_channel_membership(&conn.tenant, &state, ch_id, &pubkey_bytes, None)
-            .await
-            .map_err(IngestError::Rejected)?;
+        super::ingest::check_channel_membership(
+            conn.tenant.community(),
+            &state,
+            ch_id,
+            &pubkey_bytes,
+            None,
+            super::ingest::ChannelWrite::Post,
+        )
+        .await
+        .map_err(IngestError::Rejected)?;
 
         // Mark as local before Redis publish to prevent double-delivery when
         // the event comes back through the Redis subscriber loop.
