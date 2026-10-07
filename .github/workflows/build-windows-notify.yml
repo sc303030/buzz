@@ -1,0 +1,107 @@
+name: Build Windows notification fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+    steps:
+      - name: Download Buzz 0.5.26 source
+        uses: actions/checkout@v4
+        with:
+          repository: block/buzz
+          ref: desktop-v0.5.26
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Apply notification fix PR 7614
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "Local Build"
+          git config user.email "local-build@example.com"
+
+          git fetch origin pull/7614/head
+
+          gh api --paginate \
+            repos/block/buzz/pulls/7614/commits \
+            --jq '.[].sha' > notification-commits.txt
+
+          while IFS= read -r commit; do
+            git cherry-pick "$commit"
+          done < notification-commits.txt
+
+          rm notification-commits.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.4.0"
+
+      - name: Set up Rust target
+        shell: bash
+        run: rustup target add "$TARGET"
+
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Build helper programs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo build --release --target "$TARGET" \
+            -p buzz-acp \
+            -p buzz-agent \
+            -p buzz-dev-mcp \
+            -p git-credential-nostr \
+            -p buzz-cli
+
+          ./scripts/bundle-sidecars.sh "$TARGET"
+
+      - name: Configure installer
+        shell: bash
+        run: |
+          cat > desktop/src-tauri/tauri.local-build.conf.json <<'JSON'
+          {
+            "bundle": {
+              "createUpdaterArtifacts": false
+            }
+          }
+          JSON
+
+      - name: Build Windows installer
+        shell: bash
+        working-directory: desktop
+        run: |
+          pnpm tauri build \
+            --target "$TARGET" \
+            --bundles nsis \
+            --config src-tauri/tauri.local-build.conf.json
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Buzz-Windows-Notification-Fix
+          path: desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
